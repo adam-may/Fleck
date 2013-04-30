@@ -30,7 +30,8 @@ namespace Fleck
         private const int PROTOCOL_VERSION = 1;
         private readonly string _serverIdentity;
         private readonly List<IWebSocketConnection> _connections;
-        private readonly IDictionary<string, IDictionary<string, string>> _prefixes;
+        private readonly IDictionary<Guid, IDictionary<string, string>> _prefixes;
+        private readonly IDictionary<Uri, IList<Guid>> _subscriptions;
 
         public Action<IWebSocketConnection> OnWelcomeMessage { get; set; }
         public Action<IWebSocketConnection, string, string> OnPrefixMessage { get; set; }
@@ -50,7 +51,8 @@ namespace Fleck
         public WampSubProtocolHandler()
         {
             _connections = new List<IWebSocketConnection>();
-            _prefixes = new Dictionary<string, IDictionary<string, string>>();
+            _prefixes = new Dictionary<Guid, IDictionary<string, string>>();
+            _subscriptions = new Dictionary<Uri, IList<Guid>>();
 
             var assemblyName = Assembly.GetExecutingAssembly().GetName();
             _serverIdentity = String.Format("{0}/{1}.{2}.{3}",
@@ -135,9 +137,11 @@ namespace Fleck
                         break;
                     case WampMessageTypeId.Subscribe:
                         // Handle subscriptions
+                        HandleSubscribeMessage(conn, parsedMessage);
                         break;
                     case WampMessageTypeId.Unsubscribe:
                         // Handle unsubscriptions
+                        HandleUnsubscribeMessage(conn, parsedMessage);
                         break;
                     case WampMessageTypeId.Publish:
                         // Handle Publishing of messages
@@ -167,15 +171,80 @@ namespace Fleck
             var prefix = parameters[1].ToString();
             var uri = parameters[2].ToString();
 
-            if (!_prefixes.ContainsKey(conn.ConnectionInfo.Id.ToString()))
-                _prefixes.Add(conn.ConnectionInfo.Id.ToString(), new Dictionary<string, string>());
+            if (!_prefixes.ContainsKey(conn.ConnectionInfo.Id))
+                _prefixes.Add(conn.ConnectionInfo.Id, new Dictionary<string, string>());
 
-            var _connPrefixes = _prefixes[conn.ConnectionInfo.Id.ToString()];
+            var _connPrefixes = _prefixes[conn.ConnectionInfo.Id];
 
             _connPrefixes[prefix] = uri;
 
             FleckLog.Info(String.Format("Received prefix message on {0}: \"{1}\" -> \"{2}\"", conn.ConnectionInfo.Id, prefix, uri));
             OnPrefixMessage(conn, prefix, uri);
+        }
+
+        private void HandleSubscribeMessage(IWebSocketConnection conn, object[] parameters)
+        {
+            if (parameters.Length != 2)
+            {
+                FleckLog.Info(String.Format("Received bad subscribe message on {0}", conn.ConnectionInfo.Id));
+                return;
+            }
+
+            var topicUri = new Uri(ExpandPrefix(conn, parameters[1].ToString()));
+
+            if (!_subscriptions.ContainsKey(topicUri))
+                _subscriptions.Add(topicUri, new List<Guid>());
+
+            _subscriptions[topicUri].Add(conn.ConnectionInfo.Id);
+            FleckLog.Info(String.Format("Added subscription for topic {0}, connection {1}", topicUri, conn.ConnectionInfo.Id));
+        }
+
+        private void HandleUnsubscribeMessage(IWebSocketConnection conn, object[] parameters)
+        {
+            if (parameters.Length != 2)
+            {
+                FleckLog.Info(String.Format("Received bad unsubscribe message on {0}", conn.ConnectionInfo.Id));
+                return;
+            }
+
+            var topicUri = new Uri(ExpandPrefix(conn, parameters[1].ToString()));
+
+            if (!_subscriptions.ContainsKey(topicUri))
+                return;
+
+            _subscriptions[topicUri].Remove(conn.ConnectionInfo.Id);
+            FleckLog.Info(String.Format("Removed subscription for topic {0}, connection {1}", topicUri, conn.ConnectionInfo.Id));
+
+            if (_subscriptions[topicUri].Count() == 0)
+            {
+                _subscriptions.Remove(topicUri);
+                FleckLog.Info(String.Format("Last subscription for topic {0} removed. Removing topic", topicUri));
+            }
+        }
+
+        private string ExpandPrefix(IWebSocketConnection conn, string uri)
+        {
+            // Expands CURIEs (Compact Uris - see http://www.w3.org/TR/curie/) to full Uris
+            // This is on a per-connection basis, so we need to use a nested structure
+            // First key is connection, second is the CURIE prefix
+
+            Uri uriObject;
+            if (Uri.TryCreate(uri, UriKind.Absolute, out uriObject))
+                // A regular (non-Compact URI) has been passed in)
+                return uri;
+
+            // CURIEs are of the form "prefix:endpoint", where prefix should be replaced with the full endpoint URI
+            var components = uri.Split(new [] { ':' });
+
+            if (components.Length != 2)
+                return uri;
+
+            var connId = conn.ConnectionInfo.Id;
+
+            if (!_prefixes.ContainsKey(connId) || _prefixes[connId].ContainsKey(components[0]))
+                return uri;
+
+            return uri.Replace(components[0] + ":", _prefixes[connId][components[0]]);
         }
     }
 }
