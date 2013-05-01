@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 
 using Newtonsoft.Json;
 using Newtonsoft.Json.Converters;
+using Newtonsoft.Json.Linq;
 using Newtonsoft.Json.Schema;
 using Newtonsoft.Json.Serialization;
 
@@ -29,7 +30,7 @@ namespace Fleck
     {
         private const int PROTOCOL_VERSION = 1;
         private readonly string _serverIdentity;
-        private readonly List<IWebSocketConnection> _connections;
+        private readonly IDictionary<Guid, IWebSocketConnection> _connections;
         private readonly IDictionary<Guid, IDictionary<string, string>> _prefixes;
         private readonly IDictionary<Uri, IList<Guid>> _subscriptions;
 
@@ -38,19 +39,19 @@ namespace Fleck
         public Action<IWebSocketConnection, string, string> OnCallMessage { get; set; }
         public Action<IWebSocketConnection, string, string> OnCallResultMessage { get; set; }
         public Action<IWebSocketConnection, string, string, string, string> OnCallErrorMessage { get; set; }
-        public Action<IWebSocketConnection, string> OnSubscribeMessage { get; set; }
-        public Action<IWebSocketConnection, string> OnUnsubscribeMessage { get; set; }
-        public Action<IWebSocketConnection, string, string, IEnumerable<string>, IEnumerable<string>> OnPublishMessage { get; set; }
-        public Action<IWebSocketConnection, string, string> OnEventMessage { get; set; }
+        public Action<IWebSocketConnection, Uri> OnSubscribeMessage { get; set; }
+        public Action<IWebSocketConnection, Uri> OnUnsubscribeMessage { get; set; }
+        public Action<IWebSocketConnection, Uri, string, IEnumerable<Guid>, IEnumerable<Guid>> OnPublishMessage { get; set; }
+        public Action<IWebSocketConnection, Uri, string> OnEventMessage { get; set; }
         
-        public IEnumerable<IWebSocketConnection> Connections
+        public IDictionary<Guid, IWebSocketConnection> Connections
         {
             get { return _connections; }
         }
 
         public WampSubProtocolHandler()
         {
-            _connections = new List<IWebSocketConnection>();
+            _connections = new Dictionary<Guid, IWebSocketConnection>();
             _prefixes = new Dictionary<Guid, IDictionary<string, string>>();
             _subscriptions = new Dictionary<Uri, IList<Guid>>();
 
@@ -86,13 +87,13 @@ namespace Fleck
                     socket.OnOpen = () =>
                     {
                         FleckLog.Debug(String.Format("Adding connection to list: {0}", socket.ConnectionInfo.Id));
-                        _connections.Add(socket);
+                        _connections.Add(socket.ConnectionInfo.Id, socket);
                         SendWelcomeMessage(socket);
                     };
                     socket.OnClose = () =>
                     {
                         FleckLog.Debug(String.Format("Removing connection from list: {0}", socket.ConnectionInfo.Id));
-                        _connections.RemoveAll(conn => conn.ConnectionInfo.Id == socket.ConnectionInfo.Id);
+                        _connections.Remove(socket.ConnectionInfo.Id);
                     };
                     socket.OnMessage = message =>
                     {
@@ -145,8 +146,10 @@ namespace Fleck
                         break;
                     case WampMessageTypeId.Publish:
                         // Handle Publishing of messages
+                        HandlePublishMessage(conn, parsedMessage);
                         break;
                     case WampMessageTypeId.Event:
+                        HandleEventMessage(conn, parsedMessage);
                         // Handle sending of events 
                         break;
                     case WampMessageTypeId.Welcome:
@@ -197,6 +200,7 @@ namespace Fleck
 
             _subscriptions[topicUri].Add(conn.ConnectionInfo.Id);
             FleckLog.Info(String.Format("Added subscription for topic {0}, connection {1}", topicUri, conn.ConnectionInfo.Id));
+            OnSubscribeMessage(conn, topicUri);
         }
 
         private void HandleUnsubscribeMessage(IWebSocketConnection conn, object[] parameters)
@@ -214,12 +218,60 @@ namespace Fleck
 
             _subscriptions[topicUri].Remove(conn.ConnectionInfo.Id);
             FleckLog.Info(String.Format("Removed subscription for topic {0}, connection {1}", topicUri, conn.ConnectionInfo.Id));
+            OnUnsubscribeMessage(conn, topicUri);
 
             if (_subscriptions[topicUri].Count() == 0)
             {
                 _subscriptions.Remove(topicUri);
                 FleckLog.Info(String.Format("Last subscription for topic {0} removed. Removing topic", topicUri));
             }
+        }
+
+        private void HandlePublishMessage(IWebSocketConnection conn, object[] parameters)
+        {
+            if (parameters.Length != 5)
+            {
+                FleckLog.Info(String.Format("Received bad publish message on {0}", conn.ConnectionInfo.Id));
+                return;
+            }
+
+            var topicUri = new Uri(ExpandPrefix(conn, parameters[1].ToString()));
+            var eventId = parameters[2].ToString();
+            var excludeList = parameters[3] as JArray;
+            IEnumerable<Guid> excludeListEnumerable = null;
+            if (excludeList != null)
+            {
+                excludeListEnumerable = excludeList.Select(x => new Guid(x.Value<string>()));
+            }
+            var eligibleList = parameters[4] as JArray;
+            IEnumerable<Guid> eligibleListEnumerable = null;
+            if (eligibleList != null)
+            {
+                eligibleListEnumerable = eligibleList.Select(x => new Guid(x.Value<string>()));
+            }
+            else
+            {
+                eligibleListEnumerable = _subscriptions[topicUri];
+            }
+
+            eligibleListEnumerable.Where(guid => !excludeListEnumerable.Contains(guid))
+                                  .ToList()
+                                  .ForEach(guid =>
+                                      {
+                                          if (_connections.ContainsKey(guid))
+                                          {
+                                              var connection = _connections[guid];
+                                              // TODO: serialise message
+                                              connection.Send("Publish");
+                                          }
+                                      });
+
+            FleckLog.Info(String.Format("Published message for topic {0}, event {1}", topicUri, eventId));
+            OnPublishMessage(conn, topicUri, eventId, excludeListEnumerable, eligibleListEnumerable);
+        }
+
+        private void HandleEventMessage(IWebSocketConnection conn, object[] parameters)
+        {
         }
 
         private string ExpandPrefix(IWebSocketConnection conn, string uri)

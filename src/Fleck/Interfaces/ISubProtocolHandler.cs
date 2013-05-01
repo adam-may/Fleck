@@ -9,6 +9,6 @@ namespace Fleck
     {
         string Identifier { get; }
         Action<IWebSocketConnection> SubProtocolInitializer { get; }
-        IEnumerable<IWebSocketConnection> Connections { get; }
+        IDictionary<Guid, IWebSocketConnection> Connections { get; }
     }
 }
