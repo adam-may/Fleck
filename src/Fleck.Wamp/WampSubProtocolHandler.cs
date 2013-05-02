@@ -33,7 +33,7 @@ namespace Fleck
         // Maps connection id to real connection
         private readonly IDictionary<Guid, IWebSocketConnection> _connections;
         // Per-user list of prefixes sent to the service
-        private readonly IDictionary<Guid, IDictionary<string, string>> _prefixes;
+        private readonly IDictionary<Guid, IDictionary<string, Uri>> _prefixes;
         // List of connection ids for each topic
         private readonly IDictionary<Uri, IList<Guid>> _subscriptions;
         // Lookup for application specific end points. First item in Tuple is the type to be deserialised, 
@@ -42,7 +42,7 @@ namespace Fleck
 
         public Action<IWebSocketConnection> OnWelcomeMessage { get; set; }
         public Action<IWebSocketConnection, string, string> OnPrefixMessage { get; set; }
-        public Action<IWebSocketConnection, string, string> OnCallMessage { get; set; }
+        public Action<IWebSocketConnection, string, Uri, string> OnCallMessage { get; set; }
         public Action<IWebSocketConnection, string, string> OnCallResultMessage { get; set; }
         public Action<IWebSocketConnection, string, string, string, string> OnCallErrorMessage { get; set; }
         public Action<IWebSocketConnection, Uri> OnSubscribeMessage { get; set; }
@@ -50,10 +50,20 @@ namespace Fleck
         public Action<IWebSocketConnection, Uri, string, IEnumerable<Guid>, IEnumerable<Guid>> OnPublishMessage { get; set; }
         public Action<IWebSocketConnection, Uri, string> OnEventMessage { get; set; }
 
+        public IDictionary<Uri, IList<Guid>> Subscriptions
+        {
+            get { return _subscriptions; }
+        }
+
+        public IDictionary<Guid, IDictionary<string, Uri>> Prefixes
+        {
+            get { return _prefixes; }
+        }
+
         public WampSubProtocolHandler()
         {
             _connections = new Dictionary<Guid, IWebSocketConnection>();
-            _prefixes = new Dictionary<Guid, IDictionary<string, string>>();
+            _prefixes = new Dictionary<Guid, IDictionary<string, Uri>>();
             _subscriptions = new Dictionary<Uri, IList<Guid>>();
             _registeredDelegates = new Dictionary<Uri, Tuple<Type, Action<object>>>();
 
@@ -66,7 +76,7 @@ namespace Fleck
 
             OnWelcomeMessage = conn => { };
             OnPrefixMessage = (conn, prefix, uri) => { };
-            OnCallMessage = (conn, callId, procUri) => { };
+            OnCallMessage = (conn, callId, procUri, parameters) => { };
             OnCallResultMessage = (conn, callId, result) => { };
             OnCallErrorMessage = (conn, callId, errorUri, errorDesc, errorDetails) => { };
             OnSubscribeMessage = (conn, topicUri) => { };
@@ -189,7 +199,7 @@ namespace Fleck
 
         public void SendEventMessage(IWebSocketConnection connection, string topicUri, string eventId)
         {
-            var uri = new Uri(ExpandPrefix(connection, topicUri));
+            var uri = ExpandPrefix(connection, topicUri);
 
             object[] parameters = new object[]
             {
@@ -226,14 +236,39 @@ namespace Fleck
             var uri = parameters[2].ToString();
 
             if (!_prefixes.ContainsKey(conn.ConnectionInfo.Id))
-                _prefixes.Add(conn.ConnectionInfo.Id, new Dictionary<string, string>());
+                _prefixes.Add(conn.ConnectionInfo.Id, new Dictionary<string, Uri>());
 
             var _connPrefixes = _prefixes[conn.ConnectionInfo.Id];
 
-            _connPrefixes[prefix] = uri;
+            _connPrefixes[prefix] = new Uri(uri);
 
             FleckLog.Info(String.Format("Received prefix message on {0}: \"{1}\" -> \"{2}\"", conn.ConnectionInfo.Id, prefix, uri));
             OnPrefixMessage(conn, prefix, uri);
+        }
+
+        private void HandleCallMessage(IWebSocketConnection conn, object[] parameters)
+        {
+            if (parameters.Length != 4)
+            {
+                FleckLog.Info(String.Format("Received bad call message on {0}", conn.ConnectionInfo.Id));
+                return;
+            }
+
+            var callId = parameters[1].ToString();
+            var topicUri = ExpandPrefix(conn, parameters[2].ToString());
+            var callParameters = parameters[3].ToString();
+
+            if (_registeredDelegates.ContainsKey(topicUri))
+            {
+                var registeredDelegate = _registeredDelegates[topicUri];
+                Type parametersType = registeredDelegate.Item1;
+                var action = registeredDelegate.Item2;
+
+                var parametersObject = (parametersType)JsonConvert.DeserializeObject(callParameters);
+            }
+
+            FleckLog.Info(String.Format("Received call message on {0}: CallId: \"{1}\", Uri: \"{2}\", Parameters: \"{3}\"", conn.ConnectionInfo.Id, callId, topicUri, callParameters));
+            OnCallMessage(conn, callId, topicUri, callParameters);
         }
 
         private void HandleSubscribeMessage(IWebSocketConnection conn, object[] parameters)
@@ -244,7 +279,7 @@ namespace Fleck
                 return;
             }
 
-            var topicUri = new Uri(ExpandPrefix(conn, parameters[1].ToString()));
+            var topicUri = ExpandPrefix(conn, parameters[1].ToString());
 
             if (!_subscriptions.ContainsKey(topicUri))
                 _subscriptions.Add(topicUri, new List<Guid>());
@@ -262,7 +297,7 @@ namespace Fleck
                 return;
             }
 
-            var topicUri = new Uri(ExpandPrefix(conn, parameters[1].ToString()));
+            var topicUri = ExpandPrefix(conn, parameters[1].ToString());
 
             if (!_subscriptions.ContainsKey(topicUri))
                 return;
@@ -286,7 +321,7 @@ namespace Fleck
                 return;
             }
 
-            var topicUri = new Uri(ExpandPrefix(conn, parameters[1].ToString()));
+            var topicUri = ExpandPrefix(conn, parameters[1].ToString());
             var eventId = parameters[2].ToString();
 
             IEnumerable<Guid> excludeListEnumerable = null;
@@ -352,6 +387,7 @@ namespace Fleck
                         break;
                     case WampMessageTypeId.Call:
                         // Handle call message
+                        HandleCallMessage(conn, parsedMessage);
                         break;
                     case WampMessageTypeId.Subscribe:
                         // Handle subscriptions
@@ -377,7 +413,7 @@ namespace Fleck
             }
         }
 
-        private string ExpandPrefix(IWebSocketConnection conn, string uri)
+        private Uri ExpandPrefix(IWebSocketConnection conn, string uri)
         {
             // Expands CURIEs (Compact Uris - see http://www.w3.org/TR/curie/) to full Uris
             // This is on a per-connection basis, so we need to use a nested structure
@@ -386,20 +422,20 @@ namespace Fleck
             Uri uriObject;
             if (Uri.TryCreate(uri, UriKind.Absolute, out uriObject))
                 // A regular (non-Compact URI) has been passed in)
-                return uri;
+                return new Uri(uri);
 
             // CURIEs are of the form "prefix:endpoint", where prefix should be replaced with the full endpoint URI
             var components = uri.Split(new [] { ':' });
 
             if (components.Length != 2)
-                return uri;
+                return new Uri(uri);
 
             var connId = conn.ConnectionInfo.Id;
 
             if (!_prefixes.ContainsKey(connId) || _prefixes[connId].ContainsKey(components[0]))
-                return uri;
+                return new Uri(uri);
 
-            return uri.Replace(components[0] + ":", _prefixes[connId][components[0]]);
+            return new Uri(uri.Replace(components[0] + ":", _prefixes[connId][components[0]].ToString()));
         }
         #endregion
     }
