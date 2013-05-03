@@ -264,8 +264,8 @@ namespace Fleck
                 var parametersType = registeredDelegate.Item1;
                 var action = registeredDelegate.Item2;
 
-                var jsonObjects = JsonConvert.DeserializeObject(callParameters, parametersType);
-                action(jsonObjects);
+                var deserializedParameters = JsonConvert.DeserializeObject(callParameters, parametersType);
+                action(deserializedParameters);
             }
 
             FleckLog.Info(String.Format("Received call message on {0}: CallId: \"{1}\", Uri: \"{2}\", Parameters: \"{3}\"", conn.ConnectionInfo.Id, callId, topicUri, callParameters));
