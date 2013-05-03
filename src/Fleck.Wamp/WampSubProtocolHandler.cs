@@ -261,10 +261,11 @@ namespace Fleck
             if (_registeredDelegates.ContainsKey(topicUri))
             {
                 var registeredDelegate = _registeredDelegates[topicUri];
-                Type parametersType = registeredDelegate.Item1;
+                var parametersType = registeredDelegate.Item1;
                 var action = registeredDelegate.Item2;
 
-                var parametersObject = (parametersType)JsonConvert.DeserializeObject(callParameters);
+                var jsonObjects = JsonConvert.DeserializeObject(callParameters, parametersType);
+                action(jsonObjects);
             }
 
             FleckLog.Info(String.Format("Received call message on {0}: CallId: \"{1}\", Uri: \"{2}\", Parameters: \"{3}\"", conn.ConnectionInfo.Id, callId, topicUri, callParameters));
