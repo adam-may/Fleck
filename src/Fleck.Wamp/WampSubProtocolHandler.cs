@@ -318,12 +318,18 @@ namespace Fleck
         {
             if (parameters.Length < 3 || parameters.Length > 5)
             {
-                FleckLog.Info(String.Format("Received bad publish message on {0}", conn.ConnectionInfo.Id));
+                FleckLog.Info(String.Format("Received bad publish message on {0}. Bad parameters", conn.ConnectionInfo.Id));
                 return;
             }
 
             var topicUri = ExpandPrefix(conn, parameters[1].ToString());
             var eventId = parameters[2].ToString();
+
+            if (!_subscriptions.ContainsKey(topicUri))
+            {
+                FleckLog.Info(String.Format("Received bad publish message on {0}. Unknown topic.", conn.ConnectionInfo.Id, topicUri));
+                return;
+            }
 
             IEnumerable<Guid> excludeListEnumerable = null;
             IEnumerable<Guid> eligibleListEnumerable = null;
@@ -356,19 +362,20 @@ namespace Fleck
             }
 
             eligibleListEnumerable.Where(guid => !excludeListEnumerable.Contains(guid))
-                                  .ToList()
-                                  .ForEach(guid =>
-                                      {
-                                          if (_connections.ContainsKey(guid))
-                                          {
-                                              var connection = _connections[guid];
-                                              // TODO: deserialise message
-                                              connection.Send("Publish");
-                                          }
-                                      });
+                                    .ToList()
+                                    .ForEach(guid =>
+                                        {
+                                            if (_connections.ContainsKey(guid))
+                                            {
+                                                var connection = _connections[guid];
+                                                // TODO: deserialise message
+                                                connection.Send("Publish");
+                                            }
+                                        });
 
             FleckLog.Info(String.Format("Published message for topic {0}, event {1}", topicUri, eventId));
             OnPublishMessage(conn, topicUri, eventId, excludeListEnumerable, eligibleListEnumerable);
+
         }
         #endregion
 
