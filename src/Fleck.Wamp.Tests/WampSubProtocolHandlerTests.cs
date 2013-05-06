@@ -188,11 +188,11 @@ namespace Fleck.Wamp.Tests
 
             _webSocketConnection.SetupAllProperties();
             _wampSubProtocolHandler.SubProtocolInitializer(_webSocketConnection.Object);
-            _wampSubProtocolHandler.RegisterDelegateForMessage<Test>(new Uri(endpoint), t =>
+            _wampSubProtocolHandler.RegisterDelegateForMessage<TestCallbackMessage>(new Uri(endpoint), t =>
                 {
                     delegateCalled = true;
-                    actualCategory = t.category;
-                    actualCalories = t.calories;
+                    actualCategory = t.Category;
+                    actualCalories = t.Calories;
                 });
             
             // Act
@@ -202,13 +202,13 @@ namespace Fleck.Wamp.Tests
             // Assert
             Assert.IsTrue(delegateCalled);
             Assert.IsTrue(actualCategory.Equals(intendedCategory));
-            Assert.IsTrue(actualCalories == intendedCalories);
+            Assert.IsTrue(actualCalories.Equals(intendedCalories));
         }
     }
 
-    public class Test
+    public class TestCallbackMessage
     {
-        public string category { get; set; }
-        public int calories { get; set; }
+        public string Category { get; set; }
+        public int Calories { get; set; }
     }
 }

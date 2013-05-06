@@ -238,9 +238,9 @@ namespace Fleck
             if (!_prefixes.ContainsKey(conn.ConnectionInfo.Id))
                 _prefixes.Add(conn.ConnectionInfo.Id, new Dictionary<string, Uri>());
 
-            var _connPrefixes = _prefixes[conn.ConnectionInfo.Id];
+            var userConnectionPrefixes = _prefixes[conn.ConnectionInfo.Id];
 
-            _connPrefixes[prefix] = new Uri(uri);
+            userConnectionPrefixes[prefix] = new Uri(uri);
 
             FleckLog.Info(String.Format("Received prefix message on {0}: \"{1}\" -> \"{2}\"", conn.ConnectionInfo.Id, prefix, uri));
             OnPrefixMessage(conn, prefix, uri);
