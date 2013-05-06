@@ -1,15 +1,6 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Runtime.CompilerServices;
-using System.Text;
-using System.Threading.Tasks;
+using System.Diagnostics;
 using Moq;
-using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
-using Newtonsoft.Json.Linq;
-using Newtonsoft.Json.Schema;
-using Newtonsoft.Json.Serialization;
 using NUnit.Framework;
 
 namespace Fleck.Wamp.Tests
@@ -17,8 +8,8 @@ namespace Fleck.Wamp.Tests
     [TestFixture]
     public class WampSubProtocolHandlerTests
     {
-        private Guid _connectionId = new Guid("CFCAB391-2567-4DDE-844F-C44231CA8605");
-        private string _applicationIdentifier = "Fleck.Wamp/0.9.6";
+        private readonly Guid _connectionId = new Guid("CFCAB391-2567-4DDE-844F-C44231CA8605");
+        private const string ApplicationIdentifier = "Fleck.Wamp/0.9.6";
 
         private Mock<IWebSocketConnectionInfo> _webSocketConnectionInfo;
         private Mock<IWebSocketConnection> _webSocketConnection;
@@ -46,8 +37,8 @@ namespace Fleck.Wamp.Tests
         {
             // Arrange
             var welcomeCalled = false;
-            string message = string.Empty;
-            string expectedWelcomeMessage = String.Format("[0,\"{0}\",1,\"{1}\"]", _connectionId, _applicationIdentifier);
+            var message = string.Empty;
+            var expectedWelcomeMessage = String.Format("[0,\"{0}\",1,\"{1}\"]", _connectionId, ApplicationIdentifier);
 
             _webSocketConnection.SetupAllProperties();
             _webSocketConnection.Setup(x => x.Send(It.IsAny<string>())).Callback<String>(m => message = m);
@@ -89,8 +80,8 @@ namespace Fleck.Wamp.Tests
         {
             // Arrange
             var prefixCalled = false;
-            var intendedPrefix = "keyvalue";
-            Uri intendedUri = new Uri("http://example.com/simple/keyvalue#");
+            const string intendedPrefix = "keyvalue";
+            var intendedUri = new Uri("http://example.com/simple/keyvalue#");
             var prefixMessage = String.Format("[1, \"{0}\", \"{1}\"]", intendedPrefix, intendedUri);
             var returnedPrefix = String.Empty;
             Uri returnedUri = null;
@@ -122,9 +113,8 @@ namespace Fleck.Wamp.Tests
         {
             // Arrange
             var subscribeCalled = false;
-            Uri intendedUri = new Uri("http://example.com/simple/");
+            var intendedUri = new Uri("http://example.com/simple/");
             var subscriptionMessage = String.Format("[5, \"{0}\"]", intendedUri);
-            var returnedPrefix = String.Empty;
             Uri returnedUri = null;
 
             _webSocketConnection.SetupAllProperties();
@@ -152,9 +142,8 @@ namespace Fleck.Wamp.Tests
         {
             // Arrange
             var unsubscribeCalled = false;
-            Uri intendedUri = new Uri("http://example.com/simple/");
+            var intendedUri = new Uri("http://example.com/simple/");
             var unsubscriptionMessage = String.Format("[6, \"{0}\"]", intendedUri);
-            var returnedPrefix = String.Empty;
             Uri returnedUri = null;
 
             ShouldHandleSubscriptionRequestProperly();
@@ -178,13 +167,13 @@ namespace Fleck.Wamp.Tests
         public void ShouldGetCustomCallbacksForMessages()
         {
             // Arrange
-            var endpoint = "http://example.com/api#storeMeal";
+            const string endpoint = "http://example.com/api#storeMeal";
             var delegateCalled = false;
-            string intendedCategory = "dinner";
-            string actualCategory = String.Empty;
-            int intendedCalories = 2309;
-            int actualCalories = 0;
-            string message = String.Format("[2, \"{0}\", \"{1}\", {{\"category\": \"{2}\", \"calories\": {3} }}]", _connectionId, endpoint, intendedCategory, intendedCalories);
+            const string intendedCategory = "dinner";
+            var actualCategory = String.Empty;
+            const int intendedCalories = 2309;
+            var actualCalories = 0;
+            var message = String.Format("[2, \"{0}\", \"{1}\", {{\"category\": \"{2}\", \"calories\": {3} }}]", _connectionId, endpoint, intendedCategory, intendedCalories);
 
             _webSocketConnection.SetupAllProperties();
             _wampSubProtocolHandler.SubProtocolInitializer(_webSocketConnection.Object);
@@ -204,6 +193,55 @@ namespace Fleck.Wamp.Tests
             Assert.IsTrue(actualCategory.Equals(intendedCategory));
             Assert.IsTrue(actualCalories.Equals(intendedCalories));
         }
+        [Test]
+
+        public void ShouldHandlePublishRequestProperly()
+        {
+            // Arrange
+            var eventCalled = false;
+            var publishCalled = false;
+            var intendedUri = new Uri("http://example.com/simple/");
+            var subscriptionMessage = String.Format("[5, \"{0}\"]", intendedUri);
+            Uri eventMessageReturnedUri = null;
+            Uri publishMessageReturnedUri = null;
+            const string intendedEvent = "Hello, world!";
+            var message = String.Format("[7, \"{0}\", \"{1}\"]", intendedUri, intendedEvent);
+            var eventMessageReturnedEvent = String.Empty;
+            var publishMessageReturnedEvent = String.Empty;
+
+            _webSocketConnection.SetupAllProperties();
+            _wampSubProtocolHandler.SubProtocolInitializer(_webSocketConnection.Object);
+
+            _webSocketConnection.Object.OnOpen();
+            _webSocketConnection.Object.OnMessage(subscriptionMessage);
+
+            _wampSubProtocolHandler.OnEventMessage += (connection, uri, eventId) => 
+            {
+                eventCalled = true;
+                eventMessageReturnedUri = uri;
+                eventMessageReturnedEvent = eventId;
+            };
+
+            _wampSubProtocolHandler.OnPublishMessage += (connection, uri, eventId, excludeList, eligibleList) =>
+            {
+                publishCalled = true;
+                publishMessageReturnedUri = uri;
+                publishMessageReturnedEvent = eventId;
+            };
+
+            // Act
+            _webSocketConnection.Object.OnMessage(message);
+
+            // Assert
+            Assert.IsTrue(eventCalled);
+            Assert.IsTrue(eventMessageReturnedUri.Equals(intendedUri));
+            Assert.IsTrue(intendedEvent.Equals(eventMessageReturnedEvent));
+            Assert.IsTrue(publishCalled);
+            Assert.IsTrue(publishMessageReturnedUri.Equals(intendedUri));
+            Assert.IsTrue(intendedEvent.Equals(publishMessageReturnedEvent));
+            Assert.IsTrue(_wampSubProtocolHandler.Subscriptions[intendedUri].Contains(_connectionId));
+        }
+
     }
 
     public class TestCallbackMessage

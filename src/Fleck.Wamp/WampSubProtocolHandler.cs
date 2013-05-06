@@ -2,14 +2,8 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
-using System.Text;
-using System.Threading.Tasks;
-
 using Newtonsoft.Json;
-using Newtonsoft.Json.Converters;
 using Newtonsoft.Json.Linq;
-using Newtonsoft.Json.Schema;
-using Newtonsoft.Json.Serialization;
 
 namespace Fleck
 {
@@ -28,7 +22,7 @@ namespace Fleck
 
     public class WampSubProtocolHandler : ISubProtocolHandler
     {
-        private const int PROTOCOL_VERSION = 1;
+        private const int ProtocolVersion = 1;
         private readonly string _serverIdentity;
         // Maps connection id to real connection
         private readonly IDictionary<Guid, IWebSocketConnection> _connections;
@@ -138,11 +132,11 @@ namespace Fleck
         #region Message Senders
         private void SendWelcomeMessage(IWebSocketConnection connection)
         {
-            object[] parameters = new object[]
+            var parameters = new object[]
             {
                 WampMessageTypeId.Welcome,
                 connection.ConnectionInfo.Id,
-                PROTOCOL_VERSION,
+                ProtocolVersion,
                 _serverIdentity
             };
             var welcomeMessage = JsonConvert.SerializeObject(parameters);
@@ -153,7 +147,7 @@ namespace Fleck
 
         public void SendCallResultMessage(IWebSocketConnection connection, string callId, string result)
         {
-            object[] parameters = new object[]
+            var parameters = new object[]
             {
                 WampMessageTypeId.CallResult,
                 callId,
@@ -167,7 +161,7 @@ namespace Fleck
 
         public void SendCallErrorMessage(IWebSocketConnection connection, string callId, string errorUri, string errorDescription, string errorDetails = null)
         {
-            object[] parameters = null;
+            object[] parameters;
             
             if (errorDetails == null)
             {
@@ -197,11 +191,11 @@ namespace Fleck
             OnCallErrorMessage(connection, callId, errorUri, errorDescription, errorDetails);
         }
 
-        public void SendEventMessage(IWebSocketConnection connection, string topicUri, string eventId)
+        public void SendEventMessage(IWebSocketConnection connection, Uri topicUri, string eventId)
         {
-            var uri = ExpandPrefix(connection, topicUri);
+            var uri = ExpandPrefix(connection, topicUri.ToString());
 
-            object[] parameters = new object[]
+            var parameters = new object[]
             {
                 WampMessageTypeId.Event,
                 uri.ToString(),
@@ -307,11 +301,10 @@ namespace Fleck
             FleckLog.Info(String.Format("Removed subscription for topic {0}, connection {1}", topicUri, conn.ConnectionInfo.Id));
             OnUnsubscribeMessage(conn, topicUri);
 
-            if (_subscriptions[topicUri].Count() == 0)
-            {
-                _subscriptions.Remove(topicUri);
-                FleckLog.Info(String.Format("Last subscription for topic {0} removed. Removing topic", topicUri));
-            }
+            if (_subscriptions[topicUri].Any()) return;
+
+            _subscriptions.Remove(topicUri);
+            FleckLog.Info(String.Format("Last subscription for topic {0} removed. Removing topic", topicUri));
         }
 
         private void HandlePublishMessage(IWebSocketConnection conn, object[] parameters)
@@ -327,7 +320,7 @@ namespace Fleck
 
             if (!_subscriptions.ContainsKey(topicUri))
             {
-                FleckLog.Info(String.Format("Received bad publish message on {0}. Unknown topic.", conn.ConnectionInfo.Id, topicUri));
+                FleckLog.Info(String.Format("Received bad publish message on {0}. Unknown topic: {1}.", conn.ConnectionInfo.Id, topicUri));
                 return;
             }
 
@@ -336,11 +329,11 @@ namespace Fleck
             switch (parameters.Length)
             {
                 case 3:
-                    excludeListEnumerable = new List<Guid>() { };
+                    excludeListEnumerable = new List<Guid>();
                     eligibleListEnumerable = _subscriptions[topicUri];
                     break;
                 case 4:
-                    excludeListEnumerable = new List<Guid>() { conn.ConnectionInfo.Id };
+                    excludeListEnumerable = new List<Guid> { conn.ConnectionInfo.Id };
                     eligibleListEnumerable = _subscriptions[topicUri];
                     break;
                 case 5:
@@ -350,32 +343,26 @@ namespace Fleck
                         excludeListEnumerable = excludeList.Select(x => new Guid(x.Value<string>()));
                     }
                     var eligibleList = parameters[4] as JArray;
-                    if (eligibleList != null)
-                    {
-                        eligibleListEnumerable = eligibleList.Select(x => new Guid(x.Value<string>()));
-                    }
-                    else
-                    {
-                        eligibleListEnumerable = _subscriptions[topicUri];
-                    }
+                    eligibleListEnumerable = eligibleList != null ? eligibleList.Select(x => new Guid(x.Value<string>())) : _subscriptions[topicUri];
                     break;
             }
 
-            eligibleListEnumerable.Where(guid => !excludeListEnumerable.Contains(guid))
-                                    .ToList()
-                                    .ForEach(guid =>
-                                        {
-                                            if (_connections.ContainsKey(guid))
-                                            {
-                                                var connection = _connections[guid];
-                                                // TODO: deserialise message
-                                                connection.Send("Publish");
-                                            }
-                                        });
+            if (eligibleListEnumerable != null)
+            {
+                var listEnumerable = eligibleListEnumerable as IList<Guid> ?? eligibleListEnumerable.ToList();
+                listEnumerable.Where(guid => excludeListEnumerable != null && !excludeListEnumerable.Contains(guid))
+                              .ToList()
+                              .ForEach(guid =>
+                                  {
+                                      if (!_connections.ContainsKey(guid)) return;
+                                      var connection = _connections[guid];
 
-            FleckLog.Info(String.Format("Published message for topic {0}, event {1}", topicUri, eventId));
-            OnPublishMessage(conn, topicUri, eventId, excludeListEnumerable, eligibleListEnumerable);
+                                      SendEventMessage(connection, topicUri, eventId);
+                                  });
 
+                FleckLog.Info(String.Format("Published message for topic {0}, event {1}", topicUri, eventId));
+                OnPublishMessage(conn, topicUri, eventId, excludeListEnumerable, listEnumerable);
+            }
         }
         #endregion
 
@@ -385,7 +372,7 @@ namespace Fleck
             var parsedMessage = JsonConvert.DeserializeObject<object[]>(message);
             WampMessageTypeId messageType;
 
-            if (Enum.TryParse<WampMessageTypeId>(parsedMessage[0].ToString(), out messageType))
+            if (Enum.TryParse(parsedMessage[0].ToString(), out messageType))
             {
                 switch (messageType)
                 {
@@ -409,10 +396,6 @@ namespace Fleck
                         // Handle Publishing of messages
                         HandlePublishMessage(conn, parsedMessage);
                         break;
-                    case WampMessageTypeId.Welcome:
-                    case WampMessageTypeId.CallResult:
-                    case WampMessageTypeId.CallError:
-                    case WampMessageTypeId.Event:
                     default:
                         // Shouldn't receive any of these messages
                         FleckLog.Info(String.Format("Received bad message on {0}: {1}", conn.ConnectionInfo.Id, message));
